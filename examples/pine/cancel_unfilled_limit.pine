@@ -1,0 +1,33 @@
+// Signal Trade App: limit entry with a bracket, cancelled if not filled after N bars.
+//
+// On a signal, sends a limit buy below the close with takeProfit/stopLoss. N bars later it
+// sends {"action":"cancel","symbol":...}. "cancel" only removes UNFILLED entry orders (their
+// TP/SL go with them); if the limit already filled, its stop and target are kept, so a late
+// cancel is harmless.
+//
+// Alert setup: Condition = this indicator, "Any alert() function call".
+//              Webhook URL = https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN
+//@version=5
+indicator("STA: limit entry, cancel after N bars", overlay=true)
+
+qty        = input.int(1, "Contracts", minval=1)
+offsetPts  = input.float(10, "Limit below close (points)", minval=0)
+tpPts      = input.float(40, "Take-profit above limit (points)", minval=0)
+slPts      = input.float(20, "Stop-loss below limit (points)", minval=0)
+cancelBars = input.int(3, "Cancel after N bars", minval=1)
+
+sym = syminfo.ticker
+var int sentBar = na
+
+if ta.crossover(ta.ema(close, 9), ta.ema(close, 21)) and na(sentBar)
+    px = math.round_to_mintick(close - offsetPts)
+    msg = '{"action":"buy","symbol":"' + sym + '","qty":' + str.tostring(qty) + ',"orderType":"limit"'
+    msg := msg + ',"price":' + str.tostring(px)
+    msg := msg + ',"takeProfit":' + str.tostring(math.round_to_mintick(px + tpPts))
+    msg := msg + ',"stopLoss":' + str.tostring(math.round_to_mintick(px - slPts)) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
+    sentBar := bar_index
+
+if not na(sentBar) and bar_index - sentBar >= cancelBars
+    alert('{"action":"cancel","symbol":"' + sym + '"}', alert.freq_once_per_bar_close)
+    sentBar := na

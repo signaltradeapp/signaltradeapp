@@ -35,12 +35,18 @@
 | **MCP server** | Claude and other AI assistants can read your accounts, positions, trades and P&L. It's read-only and can't place orders. [Setup](https://signaltradeapp.com/mcp) |
 | **API** | Full REST API on Pro. [API docs](https://signaltradeapp.com/api-docs) |
 
+## Documentation
+
+**User guide** ([docs/guide](docs/guide/README.md)): [getting started](docs/guide/getting-started.md) · [brokers and prop firms](docs/guide/brokers-and-prop-firms.md) · [how copy trading works](docs/guide/copy-trading.md) · [risk management](docs/guide/risk-management.md) · [managed protection](docs/guide/managed-protection.md) · [chart trading](docs/guide/chart-and-trading.md) · [journal](docs/guide/journal-and-analytics.md) · [billing](docs/guide/billing.md) · [troubleshooting](docs/guide/troubleshooting.md)
+
+**Developers** ([docs/developers](docs/developers/README.md)): [TradingView webhooks](docs/developers/tradingview-webhooks.md) · [REST API](docs/developers/rest-api.md) · [live stream](docs/developers/streaming.md) · [MCP server](docs/developers/mcp.md) · [recipes](docs/developers/recipes.md) · [OpenAPI spec](openapi.json) · [examples](examples/) (curl, Python, Pine Script)
+
 ## Supported brokers and prop firms
 
 - **Tradovate:** Take Profit Trader, MyFundedFutures, Tradeify, LucidTrading and other Tradovate firms
-- **Rithmic:** Apex Trader Funding, Bulenox, Earn2Trade and other Rithmic firms
+- **Rithmic:** Apex Trader Funding, Earn2Trade and other Rithmic firms
 - **Propr (Hyperliquid perps):** copy between Propr accounts
-- Topstep / TopstepX is **not** supported.
+- **Not supported:** Topstep / TopstepX, Bulenox (its rules don't allow outside copy tools), and real-money (live) brokerage accounts.
 
 [Full list of brokers and prop firms](https://signaltradeapp.com/help/which-brokers-and-prop-firms-are-supported)
 

@@ -1,0 +1,56 @@
+// Signal Trade App: staged stop with the webhook "movestop" action.
+//
+//   Stage 1: open profit >= $1,300  -> {"action":"movestop","symbol":...,"offsetPoints":0}  (breakeven)
+//   Stage 2: open profit >= $2,540  -> {"action":"movestop","symbol":...,"lockUsd":1740}
+//
+// The server computes the stop price from the BROKER average entry and the position size,
+// rounds it to the tick, and moves the one working stop in place (the take-profit stays).
+// A move that would put the stop at or through the market is refused; the stop stays put.
+//
+// The entry carries its own stop (stopLoss), so there is exactly one stop to move.
+// strategy.exit below is for the backtest only and sends nothing: every webhook comes from alert().
+// Alert setup: Condition = this strategy, "alert() function calls only".
+//              Webhook URL = https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN
+// strategy.openprofit is TradingView's estimate; the broker's numbers decide the actual stop.
+//@version=5
+strategy("STA: staged stop", overlay=true, default_qty_type=strategy.fixed, default_qty_value=2)
+
+qty       = input.int(2, "Contracts", minval=1)
+slPts     = input.float(30, "Initial stop (points)")
+beAtUsd   = input.float(1300, "Stage 1: breakeven at open profit ($)")
+lockAtUsd = input.float(2540, "Stage 2: lock profit at open profit ($)")
+lockUsd   = input.float(1740, "Stage 2: dollars to lock")
+
+sym = syminfo.ticker
+
+entryJson(side, sl) =>
+    s = '{"action":"' + side + '","symbol":"' + sym + '","qty":' + str.tostring(qty)
+    s := s + ',"orderType":"market","stopLoss":' + str.tostring(math.round_to_mintick(sl)) + '}'
+    s
+
+longSignal  = ta.crossover(ta.ema(close, 9), ta.ema(close, 21))
+shortSignal = ta.crossunder(ta.ema(close, 9), ta.ema(close, 21))
+
+if strategy.position_size == 0 and longSignal
+    strategy.entry("L", strategy.long, qty=qty)
+    alert(entryJson("buy", close - slPts), alert.freq_once_per_bar_close)
+if strategy.position_size == 0 and shortSignal
+    strategy.entry("S", strategy.short, qty=qty)
+    alert(entryJson("sell", close + slPts), alert.freq_once_per_bar_close)
+
+strategy.exit("LX", "L", loss=slPts / syminfo.mintick)
+strategy.exit("SX", "S", loss=slPts / syminfo.mintick)
+
+var bool beSent   = false
+var bool lockSent = false
+if strategy.position_size == 0
+    beSent   := false
+    lockSent := false
+
+if strategy.position_size != 0 and not beSent and strategy.openprofit >= beAtUsd
+    alert('{"action":"movestop","symbol":"' + sym + '","offsetPoints":0}', alert.freq_once_per_bar_close)
+    beSent := true
+
+if strategy.position_size != 0 and not lockSent and strategy.openprofit >= lockAtUsd
+    alert('{"action":"movestop","symbol":"' + sym + '","lockUsd":' + str.tostring(lockUsd) + '}', alert.freq_once_per_bar_close)
+    lockSent := true

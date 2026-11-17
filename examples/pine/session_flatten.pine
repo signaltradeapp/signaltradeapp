@@ -1,0 +1,24 @@
+// Signal Trade App: close a symbol at a fixed New York time (for example before the close).
+//
+// Sends {"action":"close","symbol":...} on the bar that closes at the chosen time: the broker
+// closes whatever is held in that symbol and its working orders are cancelled. Other symbols
+// on the account are untouched. Set "Whole account" to send {"action":"close"} instead,
+// which flattens every position and cancels every working order on the account.
+//
+// Use a chart timeframe that has a bar closing at that minute (1m or 5m for 15:55).
+// Alert setup: Condition = this indicator, "Any alert() function call".
+//              Webhook URL = https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN
+//@version=5
+indicator("STA: flatten at session end", overlay=true)
+
+flatHour   = input.int(15, "Hour (New York)", minval=0, maxval=23)
+flatMinute = input.int(55, "Minute", minval=0, maxval=59)
+wholeAcct  = input.bool(false, "Whole account")
+
+tz = "America/New_York"
+isFlatBar = hour(time_close, tz) == flatHour and minute(time_close, tz) == flatMinute
+bgcolor(isFlatBar ? color.new(color.red, 80) : na)
+
+if isFlatBar
+    msg = wholeAcct ? '{"action":"close"}' : '{"action":"close","symbol":"' + syminfo.ticker + '"}'
+    alert(msg, alert.freq_once_per_bar_close)

@@ -1,0 +1,38 @@
+// Signal Trade App: scale out with the webhook "protect" action.
+//
+// 1. On a signal it sends a plain market entry (no bracket).
+// 2. On the first bar after the entry fills it sends
+//      {"action":"protect","symbol":...,"sl":[...],"tp":[t1,t2],"beAfterTp1":true,"beOffsetTicks":1}
+//    The position is split evenly across the targets (4 contracts -> 2 + 2), one stop covers
+//    all of it, and when TP1 fills the stop shrinks and moves to entry + 1 tick.
+//
+// Requires Managed protection ON in Settings -> Trading (switch it while flat). With it off,
+// the protect alert is refused with 403.
+// strategy.exit below is for the backtest only and sends nothing: every webhook comes from alert().
+// Alert setup: Condition = this strategy, "alert() function calls only".
+//              Webhook URL = https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN
+//@version=5
+strategy("STA: scale out with protect", overlay=true, default_qty_type=strategy.fixed, default_qty_value=4)
+
+qty    = input.int(4, "Contracts", minval=2)
+slPts  = input.float(20, "Stop (points)")
+tp1Pts = input.float(20, "Target 1 (points)")
+tp2Pts = input.float(40, "Target 2 (points)")
+
+sym = syminfo.ticker
+
+if strategy.position_size == 0 and ta.crossover(ta.ema(close, 9), ta.ema(close, 21))
+    strategy.entry("L", strategy.long, qty=qty)
+    alert('{"action":"buy","symbol":"' + sym + '","qty":' + str.tostring(qty) + ',"orderType":"market"}', alert.freq_once_per_bar_close)
+
+strategy.exit("T1", "L", qty_percent=50, profit=tp1Pts / syminfo.mintick, loss=slPts / syminfo.mintick)
+strategy.exit("T2", "L", profit=tp2Pts / syminfo.mintick, loss=slPts / syminfo.mintick)
+
+justFilled = strategy.position_size > 0 and nz(strategy.position_size[1]) == 0
+if justFilled
+    entry = strategy.position_avg_price
+    msg = '{"action":"protect","symbol":"' + sym + '"'
+    msg := msg + ',"sl":[' + str.tostring(math.round_to_mintick(entry - slPts)) + ']'
+    msg := msg + ',"tp":[' + str.tostring(math.round_to_mintick(entry + tp1Pts)) + ',' + str.tostring(math.round_to_mintick(entry + tp2Pts)) + ']'
+    msg := msg + ',"beAfterTp1":true,"beOffsetTicks":1}'
+    alert(msg, alert.freq_once_per_bar_close)

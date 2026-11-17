@@ -1,0 +1,33 @@
+// Signal Trade App: market entries with a take-profit / stop-loss bracket computed in Pine.
+//
+// Indicator (not a strategy): an EMA cross sends {"action":"buy"|"sell", ...} with absolute
+// takeProfit / stopLoss prices. The broker links the two legs as OCO.
+//
+// Alert setup: Condition = this indicator, "Any alert() function call".
+//              Webhook URL = https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN
+//              The alert() text below is the request body; nothing goes in the message box.
+// Use a continuous chart (MNQ1!, ES1!): syminfo.ticker then follows the roll automatically.
+//@version=5
+indicator("STA: EMA cross with bracket", overlay=true)
+
+fastLen = input.int(9, "Fast EMA", minval=1)
+slowLen = input.int(21, "Slow EMA", minval=2)
+qty     = input.int(1, "Contracts", minval=1)
+tpPts   = input.float(40, "Take-profit distance (points)", minval=0)
+slPts   = input.float(20, "Stop-loss distance (points)", minval=0)
+
+fast = ta.ema(close, fastLen)
+slow = ta.ema(close, slowLen)
+plot(fast, "Fast", color=color.teal)
+plot(slow, "Slow", color=color.orange)
+
+orderJson(side, tp, sl) =>
+    s = '{"action":"' + side + '","symbol":"' + syminfo.ticker + '","qty":' + str.tostring(qty)
+    s := s + ',"orderType":"market","takeProfit":' + str.tostring(math.round_to_mintick(tp))
+    s := s + ',"stopLoss":' + str.tostring(math.round_to_mintick(sl)) + '}'
+    s
+
+if ta.crossover(fast, slow)
+    alert(orderJson("buy", close + tpPts, close - slPts), alert.freq_once_per_bar_close)
+if ta.crossunder(fast, slow)
+    alert(orderJson("sell", close - tpPts, close + slPts), alert.freq_once_per_bar_close)

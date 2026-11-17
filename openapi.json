@@ -1,0 +1,1856 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Signal Trade App API",
+        "version": "1.0.0",
+        "description": "Public API for Signal Trade App \u2014 futures trade copier platform.\n\n## What problems does this API solve?\n- **Eliminates integration complexity** \u2014 Tradovate's native API requires OAuth 2.0 flows, WebSocket session management, rate-limit handling, and protobuf-level message parsing. SignalTradeApp abstracts all of that into clean REST endpoints and persistent WebSocket connections so you can place trades, read positions, and manage accounts with a single API key.\n- **Trade copying at scale** \u2014 Manually mirroring orders across multiple accounts via Tradovate's API means building your own pub/sub engine, concurrency handling, and failure retry logic. Our API does this out of the box: one leader order propagates to every follower account in milliseconds.\n- **Built-in risk guardrails** \u2014 Instead of writing your own Daily Loss Limit (DLL) or Daily Profit Trigger (DPT) logic, our API applies these protections broker-side automatically.\n\n## SignalTradeApp vs. Tradovate Direct Integration\n| | Tradovate Direct | SignalTradeApp API |\n|---|---|---|\n| Authentication | OAuth 2.0 + token refresh loops | Single X-API-Key header |\n| Connection | DIY WebSocket reconnection & heartbeat | Managed, always-on WebSocket layer |\n| Multi-account | Custom orchestration per account | One call copies to any group of accounts |\n| Rate limits | Strict per-endpoint quotas | Aggregated, smart-routed to stay within broker limits |\n| Trade execution | REST or WebSocket order entry | Unified REST API over managed broker WebSockets |\n\n## Important notes\n- **Market data is not available** on this API. Quote and candle endpoints are disabled. Use your broker's data feed or a market-data provider for prices.\n- **Strategies are in beta.** The `/strategies` endpoints let you create and evaluate simple rules, but they do not auto-trade unless explicitly wired to an execution target.\n- **Idempotency** is supported on `POST /accounts/{id}/orders`. Pass a unique `Idempotency-Key` header (8\u2013128 chars) to safely retry requests. Cached responses are retained for 24 hours.\n- **MCP (AI assistants).** `POST /api/mcp` is a read-only MCP server for Claude, ChatGPT, Cursor and other MCP clients. Authenticate with the same API key (`Authorization: Bearer <key>`). Its tools read accounts, positions, orders, fills, risk, daily P&L, groups, connections and recent copies; none can place, change or cancel an order.\n- **Demo accounts recommended for development.** Tradovate demo connections use the same order path as live accounts, making them the safest way to test trade-scoped integrations before risking real capital.\n\n## Lightning-fast execution\n- **Sub-100ms copy latency** via native WebSocket pub/sub (not polling).\n- **Co-located infrastructure** with proximity to Tradovate and Rithmic matching engines.\n- **No intermediary hops** \u2014 orders flow straight from our WebSocket layer to the broker's gateway; many competing platforms add a REST translation layer or queue that adds 200\u2013500 ms.\n- **Automatic failover** \u2014 if a broker connection drops, we reconnect and retry in the background without dropping your order.\n\nMost competing trade-copier platforms rely on periodic REST polling or third-party bridges, introducing latency and missed fills. SignalTradeApp keeps a persistent, low-level WebSocket pipe open to each broker so your orders hit the market as fast as technically possible.",
+        "contact": {
+            "name": "Signal Trade App Support",
+            "email": "support@signaltradeapp.com"
+        }
+    },
+    "tags": [
+        {
+            "name": "Accounts",
+            "description": "Account, position, and trade history operations"
+        },
+        {
+            "name": "Strategies",
+            "description": "Strategy creation and evaluation (beta)"
+        },
+        {
+            "name": "Webhooks",
+            "description": "TradingView webhook token management"
+        },
+        {
+            "name": "User",
+            "description": "Current user information"
+        },
+        {
+            "name": "Connection Health",
+            "description": "Real-time broker connection status streams"
+        },
+        {
+            "name": "Market Data",
+            "description": "Disabled for API consumers"
+        }
+    ],
+    "servers": [
+        {
+            "url": "https://signaltradeapp.com/api/v1",
+            "description": "Production v1"
+        }
+    ],
+    "components": {
+        "securitySchemes": {
+            "ApiKeyAuth": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-API-Key"
+            }
+        },
+        "schemas": {
+            "Error": {
+                "type": "object",
+                "properties": {
+                    "error": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string"
+                            },
+                            "code": {
+                                "type": "string"
+                            },
+                            "details": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "field": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "PlaceOrderRequest": {
+                "type": "object",
+                "required": [
+                    "symbol",
+                    "action",
+                    "qty"
+                ],
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "example": "NQ"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "Buy",
+                            "Sell"
+                        ]
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "example": 1
+                    },
+                    "orderType": {
+                        "type": "string",
+                        "enum": [
+                            "Market",
+                            "Limit",
+                            "Stop"
+                        ],
+                        "default": "Market"
+                    },
+                    "price": {
+                        "type": "number",
+                        "example": 20500.5,
+                        "description": "Required for Limit and Stop orders"
+                    },
+                    "bracket": {
+                        "type": "object",
+                        "properties": {
+                            "takeProfit": {
+                                "type": "number",
+                                "example": 20600
+                            },
+                            "stopLoss": {
+                                "type": "number",
+                                "example": 20400
+                            }
+                        }
+                    },
+                    "takeProfit": {
+                        "type": "number",
+                        "example": 20600,
+                        "description": "Alternative to bracket.takeProfit"
+                    },
+                    "stopLoss": {
+                        "type": "number",
+                        "example": 20400,
+                        "description": "Alternative to bracket.stopLoss"
+                    },
+                    "timeInForce": {
+                        "type": "string",
+                        "enum": [
+                            "Day",
+                            "GTC"
+                        ],
+                        "description": "How long the bracket legs (and a Limit/Stop entry) rest. Omitted = Day: they expire at the session close, so a position held overnight loses its protection. GTC rests until filled or cancelled. Ignored for the entry of a Market order. If your account does not accept GTC (some prop firms refuse it) the order is rejected with the broker's reason \u2014 it is never downgraded to Day."
+                    }
+                }
+            },
+            "ProtectRequest": {
+                "type": "object",
+                "required": [
+                    "symbol"
+                ],
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "example": "NQ",
+                        "description": "Symbol of the open position to protect"
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "example": 1,
+                        "description": "Defaults to the full open position size"
+                    },
+                    "takeProfit": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "example": 20600,
+                        "description": "Set to null to clear existing TP"
+                    },
+                    "stopLoss": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "example": 20400,
+                        "description": "Set to null to clear existing SL"
+                    },
+                    "timeInForce": {
+                        "type": "string",
+                        "enum": [
+                            "Day",
+                            "GTC"
+                        ],
+                        "description": "Applies to both legs. Omitted on a replace = keep what the live protection already has (GTC stays GTC); omitted with no protection live = Day, which expires at the session close. Moving a leg with PUT /accounts/{id}/orders/{orderId} also keeps its timeInForce. A refusal of GTC is returned as an error, never downgraded to Day."
+                    },
+                    "expected": {
+                        "$ref": "#/components/schemas/ExpectedPosition"
+                    }
+                }
+            },
+            "ClosePositionRequest": {
+                "type": "object",
+                "required": [
+                    "symbol"
+                ],
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "example": "MNQ",
+                        "description": "Root (MNQ, MNQ1!) or a contract (MNQZ6)"
+                    },
+                    "expected": {
+                        "$ref": "#/components/schemas/ExpectedPosition"
+                    }
+                }
+            },
+            "ExpectedPosition": {
+                "type": "object",
+                "required": [
+                    "side",
+                    "qty"
+                ],
+                "description": "Only act if the position is still this one. Compared with the live position (the same side/qty/avgPrice that GET /stream sends); if it differs the request is refused with 409 POSITION_CHANGED and nothing is sent to the broker. Include avgPrice: it is what tells your position A apart from a B of the same side and size that opened after A exited.",
+                "properties": {
+                    "side": {
+                        "type": "string",
+                        "enum": [
+                            "LONG",
+                            "SHORT"
+                        ]
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "example": 2
+                    },
+                    "avgPrice": {
+                        "type": "number",
+                        "example": 21034.25
+                    }
+                }
+            },
+            "StrategyRequest": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "symbol",
+                    "conditions",
+                    "action"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "example": "NQ breakout"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "example": "NQ"
+                    },
+                    "conditions": {
+                        "type": "object",
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "indicator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "price"
+                                        ]
+                                    },
+                                    "operator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "gt",
+                                            "lt"
+                                        ]
+                                    },
+                                    "value": {
+                                        "type": "number"
+                                    }
+                                },
+                                "required": [
+                                    "indicator",
+                                    "operator",
+                                    "value"
+                                ]
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "indicator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "sma"
+                                        ]
+                                    },
+                                    "operator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "gt",
+                                            "lt"
+                                        ]
+                                    },
+                                    "value": {
+                                        "type": "number"
+                                    },
+                                    "period": {
+                                        "type": "integer",
+                                        "default": 20
+                                    }
+                                },
+                                "required": [
+                                    "indicator",
+                                    "operator",
+                                    "value"
+                                ]
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "indicator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "rsi"
+                                        ]
+                                    },
+                                    "operator": {
+                                        "type": "string",
+                                        "enum": [
+                                            "gt",
+                                            "lt"
+                                        ]
+                                    },
+                                    "value": {
+                                        "type": "number"
+                                    },
+                                    "period": {
+                                        "type": "integer",
+                                        "default": 14
+                                    }
+                                },
+                                "required": [
+                                    "indicator",
+                                    "operator",
+                                    "value"
+                                ]
+                            }
+                        ]
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "buy",
+                            "sell",
+                            "flatten"
+                        ]
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "default": 1
+                    },
+                    "orderType": {
+                        "type": "string",
+                        "enum": [
+                            "market",
+                            "limit",
+                            "stop"
+                        ],
+                        "default": "market"
+                    },
+                    "targetAccountId": {
+                        "type": "string"
+                    }
+                }
+            }
+        }
+    },
+    "security": [
+        {
+            "ApiKeyAuth": []
+        }
+    ],
+    "paths": {
+        "/accounts": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "List connected accounts",
+                "description": "Each account carries `balance` and `dayPnl`: today's realized P&L, **net of commissions** \u2014 the Day P&L the app shows. Open P&L is not included (see `GET /accounts/{id}/positions` or the stream). `tradingDay` is the CME trading day it belongs to, which rolls at 17:00 America/New_York; for Tradovate the broker's own trade date is used.",
+                "responses": {
+                    "200": {
+                        "description": "List of accounts",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/positions": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Open positions for an account",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Positions",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Flatten all positions on an account",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Account flattened",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope or account inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/risk": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Risk limits and remaining drawdown for an account",
+                "description": "`drawdown` is what an account can still lose before it is liquidated, for sizing positions from what is left.\n\n- `equity` \u2014 balance plus open P&L.\n- `liquidationLevel` \u2014 the equity at which the account is liquidated.\n- `drawdownRemaining` \u2014 `equity - liquidationLevel`. Negative means the line has been crossed.\n- `drawdownType` \u2014 `STATIC`, `TRAILING` (real-time) or `EOD_TRAILING`; null when the broker does not say.\n- `source` \u2014 `broker` when the broker reports the rule (Rithmic RMS, Tradovate prop-account auto-liquidation), `configured` when it comes from the drawdown the account owner entered on the Risk page, null when neither is known (all values null).\n\n`profitToPass` is how far the account is from passing an evaluation: `targetBalance - equity`, where `targetBalance` is the start balance plus the profit target the account owner entered on the Risk page. Zero or negative means the target is reached. Null when no target is set; no broker reports one.\n\n`brokerRms` is the raw Rithmic RMS block, kept for existing clients. Its `autoLiqThresholdCurrentValue` is a balance level, not headroom.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Risk settings and drawdown",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object",
+                                            "properties": {
+                                                "drawdown": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "equity": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 48930.5
+                                                        },
+                                                        "balance": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 49010
+                                                        },
+                                                        "drawdownLimit": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 2500
+                                                        },
+                                                        "drawdownType": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ],
+                                                            "enum": [
+                                                                "STATIC",
+                                                                "TRAILING",
+                                                                "EOD_TRAILING",
+                                                                null
+                                                            ]
+                                                        },
+                                                        "peakBalance": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 50000
+                                                        },
+                                                        "liquidationLevel": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 47500
+                                                        },
+                                                        "drawdownRemaining": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 1430.5
+                                                        },
+                                                        "source": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ],
+                                                            "enum": [
+                                                                "broker",
+                                                                "configured",
+                                                                null
+                                                            ]
+                                                        },
+                                                        "profitTarget": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 3000
+                                                        },
+                                                        "targetBalance": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 53000
+                                                        },
+                                                        "profitToPass": {
+                                                            "type": [
+                                                                "number",
+                                                                "null"
+                                                            ],
+                                                            "example": 4069.5
+                                                        },
+                                                        "updatedAt": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ],
+                                                            "format": "date-time"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/orders": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Trade history for an account",
+                "description": "Returns executed trades for the account. This endpoint is named `/orders` for backwards compatibility.\n\n**P&L fields:** `pnl` and `gross` are GROSS (price difference \u00d7 quantity \u00d7 point value). `fees` is the broker commission for the trade (entry + exit, or entry only while open) and `net` = `gross` \u2212 `fees`. Sum `net` by trading day to match the app's Day P&L and calendar.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer",
+                            "default": 100
+                        }
+                    },
+                    {
+                        "name": "symbol",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "side",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "LONG",
+                                "SHORT"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "since",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "format": "date-time"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Trades",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Place an order",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 8,
+                            "maxLength": 128
+                        },
+                        "description": "Unique key for idempotent retries. Cached for 24 hours."
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PlaceOrderRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Order placed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope or account inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "BROKER_ORDER_REJECTED \u2014 the broker refused the order; the message carries its reason. Terminal: do not retry without changing the request. (Returned 502 before this change.)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Broker did not return an order ID; the order may or may not be working \u2014 check GET /working-orders before retrying",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Broker client not connected",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/fills": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Fill ledger \u2014 every broker execution",
+                "description": "Every execution on your accounts as the broker reported it, oldest first: our `accountId`, `brokerAccountId` (the broker's account number), `id` (stable fill id, unique per account), `brokerFillId`, `orderId`, `symbol` (contract), `side`/`action`, `qty`, `price` (this execution's own price, not the order average), `fees` (USD, all broker fees on that fill) and `timestamp`.\n\n**Live + catch-up:** each fill also arrives as a `fill` event on GET /stream with the same `id`. Keep the `cursor` of the last row you processed and call `/fills?after=<cursor>` when you reconnect to get everything you missed; deduplicate by `accountId` + `id`. Fills made while our connection to the broker was down are recovered from the broker's history when it reconnects (Tradovate: same trading day).\n\n**Fees and brokerFillId** are read from the broker's own records and appear within about 15 seconds of the fill (Tradovate); until then they are `null`. Rows are only updated to add them.\n\nThe ledger starts recording when your first API key exists.",
+                "parameters": [
+                    {
+                        "name": "accountId",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "One account only"
+                    },
+                    {
+                        "name": "after",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Return fills after this cursor (from a previous response)"
+                    },
+                    {
+                        "name": "since",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "format": "date-time"
+                        },
+                        "description": "Executed at or after this time"
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer",
+                            "default": 500,
+                            "maximum": 1000
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{ data: Fill[], meta: { limit, nextCursor, hasMore } }",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/working-orders": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Live working orders for an account",
+                "description": "Orders currently resting on the broker's book \u2014 unfilled entries and active TP/SL legs. Unlike `GET /accounts/{id}/orders` (closed trade history), this reads the broker directly, so it is the endpoint to poll when deciding whether a pending order still needs cancelling.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Working orders",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/orders/{orderId}": {
+            "put": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Modify (reprice/resize) a resting order",
+                "description": "Moves one resting order to a new price, and optionally a new size, WITHOUT cancelling it first.\n\n**This is how you move a stop to breakeven or run a trailing stop.** Doing it as cancel-then-place leaves the position with no stop at all between the two calls; this endpoint does not.\n\n**How gap-free it is depends on the broker \u2014 check `replaced` in the response:**\n\n- **Tradovate** reprices IN PLACE, with no unprotected window. `replaced` is absent. A plain resting order keeps its id, but **a bracket leg (the stop or take-profit of a bracket) does not**: about a second after the first move, Tradovate re-issues both legs under NEW ids at the same prices. The broker OCO link stays intact (a filled stop still cancels the take-profit). Re-read `GET /accounts/{id}/working-orders` before each move instead of caching the id.\n- **Rithmic** has no in-place modify: a modify is a cancel plus a re-place at the protocol level, so the order comes back under a NEW id and there is a brief window with nothing resting. `replaced: true`. Re-read `GET /accounts/{id}/working-orders` instead of caching the id you sent.\n\n**Size is preserved by default.** Send `price` alone and the order keeps its current quantity \u2014 a reprice never silently resizes. Send `qty` only when you actually mean to resize.\n\n**Order type is preserved.** `orderType` is accepted, but the broker's own view of the order wins: a reprice can never turn a Stop into a Limit.\n\n**Rejections** (e.g. a stop placed through the market) come back as `400` carrying the broker's own reason.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Broker order ID. On Rithmic this changes after each modify \u2014 re-read it from working-orders."
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": [
+                                    "price"
+                                ],
+                                "properties": {
+                                    "price": {
+                                        "type": "number",
+                                        "example": 29499.25,
+                                        "description": "The new price. For a Stop this is the trigger price."
+                                    },
+                                    "qty": {
+                                        "type": "integer",
+                                        "example": 2,
+                                        "description": "Optional. Omit to keep the order at its current size."
+                                    },
+                                    "orderType": {
+                                        "type": "string",
+                                        "enum": [
+                                            "Limit",
+                                            "Stop"
+                                        ],
+                                        "description": "Optional. Ignored when the broker already knows the order's type."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Order modified. `replaced: true` means the broker re-placed it under a new id.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Broker rejected the new price/size, no price supplied, or the broker does not support modification",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope or account inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Broker connection unavailable or client not connected. Retryable.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Cancel a single pending order",
+                "description": "Cancels one order by the `orderId` returned from `POST /accounts/{id}/orders`.\n\n**Never flattens.** An open position is untouched no matter which order you cancel \u2014 including the last remaining protective leg, which leaves the position open and unprotected rather than closing it.\n\n**Unfilled bracket entry:** cancelling the entry also removes its attached TP/SL legs. Cancel the entry id only.\n\n**Filled bracket:** once the entry fills, the TP/SL legs are live protection on a real position and are cancelled by their own ids. Note that cancelling ONE leg re-places the surviving leg under a NEW order id, so do not cache leg ids across a leg cancel \u2014 re-read `GET /accounts/{id}/working-orders` afterwards.\n\n**Racing a fill:** if the order fills or is otherwise no longer cancellable, the broker rejects the cancel and this returns `409 CANCEL_REJECTED` with the broker's reason. Treat 409 as terminal (stop retrying) and `503` as retryable. Re-cancelling an already-cancelled order returns 200.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Broker order ID from the order placement response."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Order cancelled",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Broker does not support order cancellation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope or account inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "CANCEL_REJECTED \u2014 the broker refused the cancellation, typically because the order already filled or is unknown to it. Terminal: do not retry.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Broker connection unavailable or client not connected. Retryable.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/protect": {
+            "post": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Apply or update TP/SL protection on a position",
+                "description": "Attaches or REPLACES the broker-native TP/SL protection on an open position.\n\n**Replacement is total.** Whatever was protecting the position beforehand is cancelled first \u2014 including TP/SL legs the broker attached itself when you placed a bracket at entry, which no `/protect` call ever created. The call only succeeds once those old orders are confirmed gone, so a `201` means nothing stale is still working. If the old protection cannot be cancelled you get `409 PROTECTION_CANCEL_FAILED` and nothing new is placed \u2014 your original protection is still live and untouched.\n\n**Omitting a leg keeps it.** Send only `stopLoss` to move the stop and leave the take-profit exactly where it is; its current level is read from the live order, so a leg you dragged by hand is not reset. Send `null` to remove a leg outright.\n\n**`legs[].orderId` are real, cancellable broker order ids** \u2014 the ids those orders are resting under, which you can pass straight to `DELETE` or `PUT /accounts/{id}/orders/{orderId}`. `ocoGroupId` is an opaque grouping token, NOT an order id; never send it as one.\n\n**Note that replacing protection issues new orders**, so every leg id changes on every call. Re-read them from the response or from `GET /accounts/{id}/working-orders`; do not cache them across calls.\n\n**Moving a stop to breakeven or trailing it:** prefer `PUT /accounts/{id}/orders/{orderId}` on the stop itself. That reprices the existing order rather than replacing the pair, which on Tradovate means the position is never unprotected for even a moment.\n\n**Delayed or retried requests:** send `expected` (side, qty, avgPrice of the position you mean). If the position has changed by the time the request runs \u2014 for example it exited on its own SL/TP and a new one opened \u2014 you get `409 POSITION_CHANGED` and nothing is cancelled or placed.\n\nHolding overnight:** protection is Day unless you send `timeInForce: \"GTC\"` \u2014 Day legs expire at the session close and the position is then unprotected. `GET /accounts/{id}/working-orders` and `order` events on `/stream` report each order's `timeInForce`; on `/stream` a leg that left the book carries `brokerStatus` (`Expired`, `Canceled`, `Rejected`), so an expiry is distinguishable from a cancel.",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ProtectRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Protection placed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "POSITION_CHANGED (expected did not match; nothing sent) or another protection update in progress",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/accounts/{id}/positions/close": {
+            "post": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Close one symbol (optionally only if it is still the expected position)",
+                "description": "Closes the position in ONE symbol with a broker-sized close, then cancels that symbol's working orders. Other symbols are untouched (unlike `DELETE /accounts/{id}/positions`, which flattens everything).\n\n**Delayed or retried closes:** send `expected`. If the position is no longer that one \u2014 it already exited, or a new position opened \u2014 you get `409 POSITION_CHANGED` and nothing is closed or cancelled. With two months of the symbol held, `expected` is refused `409 POSITION_AMBIGUOUS`; name the contract (e.g. MNQZ6). `503 POSITIONS_UNKNOWN` means positions have not loaded yet \u2014 nothing was sent, retry.\n\nA `200` with an empty `closed` list means nothing was held (only without `expected`).",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ClosePositionRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "{ data: { symbol, closed: [contracts], cancelledOrders } }",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope or account inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "POSITION_CHANGED or POSITION_AMBIGUOUS \u2014 nothing was sent",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Broker not connected, or positions not loaded yet \u2014 nothing was sent",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/market/quotes/{symbol}": {
+            "get": {
+                "tags": [
+                    "Market Data"
+                ],
+                "summary": "Get real-time quote (disabled)",
+                "parameters": [
+                    {
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "403": {
+                        "description": "Market data is disabled for API consumers",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/market/candles": {
+            "get": {
+                "tags": [
+                    "Market Data"
+                ],
+                "summary": "Get historical candles (disabled)",
+                "responses": {
+                    "403": {
+                        "description": "Market data is disabled for API consumers",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/strategies": {
+            "get": {
+                "tags": [
+                    "Strategies"
+                ],
+                "summary": "List strategies (beta)",
+                "responses": {
+                    "200": {
+                        "description": "Strategies"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Strategies"
+                ],
+                "summary": "Create a strategy (beta)",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/StrategyRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Strategy created"
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "API key missing trade scope",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/strategies/{id}/evaluate": {
+            "post": {
+                "tags": [
+                    "Strategies"
+                ],
+                "summary": "Evaluate a strategy (beta)",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Evaluation result"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Strategy not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/strategies/{id}/logs": {
+            "get": {
+                "tags": [
+                    "Strategies"
+                ],
+                "summary": "Get execution logs (beta)",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Execution logs"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Strategy not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/webhooks": {
+            "post": {
+                "tags": [
+                    "Webhooks"
+                ],
+                "summary": "Create a webhook token",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "accountId": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Webhook created"
+                    },
+                    "400": {
+                        "description": "Validation failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stream": {
+            "get": {
+                "tags": [
+                    "Live Stream"
+                ],
+                "summary": "Live orders, fills, positions, balances and drawdown",
+                "description": "Server-Sent Events (SSE) stream of everything that changes on your accounts. Use it instead of polling /accounts/{id}/positions and /accounts/{id}/orders.\n\nThe stream opens with a `snapshot` event (your accounts, `balances` with each account's balance and today's `dayPnl`, open positions, working orders and remaining drawdown), then sends:\n- `order`: an order was placed, changed, filled, cancelled or rejected\n- `fill`: an execution \u2014 same fields and same `id` as a row of GET /fills (fees and brokerFillId arrive via /fills ~15s later on Tradovate)\n- `position`: a position changed (qty 0 means flat); at most once per second per account+symbol, latest value wins\n- `balance`: balance, open P&L or today's realized P&L changed; at most once per second per account. `realizedPnl` is the broker's own figure: net of commissions on Tradovate, gross on Rithmic. `dayPnl` in the snapshot and on GET /accounts is always net\n- `risk`: trailing/remaining drawdown changed \u2014 equity, liquidation level, drawdown remaining, profit to pass (the Risk page's numbers; sent when a value moves by $1 or more, at most once per second)\n- `risk_settings`: risk limits were saved (same fields as GET /accounts/{id}/risk)\n- `lock`: the account was locked or unlocked, including when a lock's time runs out\n- `connection`: a broker connection changed status\n- `heartbeat`: every 15 seconds\n\nEvery event carries our `accountId`, the same id the REST endpoints use. Pass `?accountId=` to receive one account only. Up to 5 streams can be open per account; a sixth returns 429. If the stream drops (no event for 30 seconds), reconnect: the new snapshot brings you up to date.\n\nExample:\n```\ndata: {\"type\":\"snapshot\",\"accounts\":[{\"id\":\"acc_123\",\"name\":\"DEMO1623501\",\"status\":\"ACTIVE\"}],\"balances\":[{\"accountId\":\"acc_123\",\"balance\":50349.44,\"dayPnl\":349.44,\"tradingDay\":\"2026-10-06\"}],\"positions\":[],\"orders\":[],\"ts\":1719861123456}\n\ndata: {\"type\":\"fill\",\"id\":\"616507970099\",\"orderId\":\"616507970052\",\"accountId\":\"acc_123\",\"symbol\":\"MNQZ6\",\"side\":\"LONG\",\"qty\":1,\"price\":21440,\"timestamp\":\"2024-07-01T19:12:05.000Z\",\"ts\":1719861125000}\n\ndata: {\"type\":\"position\",\"accountId\":\"acc_123\",\"symbol\":\"MNQZ6\",\"side\":\"LONG\",\"qty\":1,\"avgPrice\":21440,\"openPnl\":0,\"ts\":1719861125100}\n```",
+                "parameters": [
+                    {
+                        "name": "accountId",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Only send events for this account"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE stream established",
+                        "content": {
+                            "text/event-stream": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid API key"
+                    },
+                    "404": {
+                        "description": "accountId is not one of yours"
+                    },
+                    "429": {
+                        "description": "Too many open streams"
+                    }
+                }
+            }
+        },
+        "/connection-health/stream": {
+            "get": {
+                "tags": [
+                    "Connection Health"
+                ],
+                "summary": "Real-time connection status stream",
+                "description": "Server-Sent Events (SSE) stream for connection status changes.\n\nSubscribe to this endpoint to receive real-time events when any of your broker connections:\n- connect (CONNECTED)\n- disconnect (RECONNECTING)\n- reconnect (CONNECTED)\n- hit an OAuth expiry (AUTH_EXPIRED)\n- encounter a fatal error (ERROR)\n\nEvents are delivered as SSE data lines. The stream opens with a heartbeat, then sends a snapshot of every connection's current status, then emits status changes as they happen.\n\nA heartbeat is sent every 15 seconds to keep the connection alive through proxies. The stream has no fixed lifetime \u2014 it stays open until the client closes it or the server restarts. Treat a gap of more than 30 seconds with no event of any kind as a dropped stream and reconnect.\n\nExample event stream:\n```\ndata: {\"type\":\"snapshot\",\"connectionId\":\"conn_abc\",\"status\":\"CONNECTED\",\"ts\":1719861123456}\n\ndata: {\"type\":\"status\",\"connectionId\":\"conn_abc\",\"status\":\"RECONNECTING\",\"ts\":1719861200000}\n\ndata: {\"type\":\"heartbeat\",\"ts\":1719861240000}\n```",
+                "responses": {
+                    "200": {
+                        "description": "SSE stream established",
+                        "content": {
+                            "text/event-stream": {
+                                "schema": {
+                                    "type": "string",
+                                    "example": "data: {\"type\":\"status\",\"connectionId\":\"conn_abc\",\"status\":\"CONNECTED\",\"ts\":1719861123456}\n\n"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/groups": {
+            "get": {
+                "tags": [
+                    "Copy groups"
+                ],
+                "summary": "List copy groups (read-only)",
+                "description": "Each group with its leader account and every follower: copyRatio, following (false = paused), inverseCopy, copyDelaySeconds and per-instrument symbolRules.",
+                "responses": {
+                    "200": {
+                        "description": "Groups"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/connections": {
+            "get": {
+                "tags": [
+                    "Connections"
+                ],
+                "summary": "Broker connection status snapshot",
+                "description": "Every broker connection with status (CONNECTED, RECONNECTING, AUTH_EXPIRED, ERROR, DISCONNECTED, DISABLED), the error message when it is down, and how many accounts it carries. The live version is GET /connection-health/stream.",
+                "responses": {
+                    "200": {
+                        "description": "Connections"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/pnl/daily": {
+            "get": {
+                "tags": [
+                    "Accounts"
+                ],
+                "summary": "Realized P&L per trading day",
+                "description": "Per futures trading day (6PM\u20135PM ET): the total across accounts and one row per account. Defaults to the last 30 days; at most 366 days per request.",
+                "parameters": [
+                    {
+                        "name": "accountId",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "from",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "example": "2026-11-01"
+                        }
+                    },
+                    {
+                        "name": "to",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "example": "2026-11-06"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Daily P&L"
+                    },
+                    "400": {
+                        "description": "Bad date range"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Account not found"
+                    }
+                }
+            }
+        },
+        "/copies": {
+            "get": {
+                "tags": [
+                    "Copy groups"
+                ],
+                "summary": "Recent copy attempts",
+                "description": "The last copy attempts (leader \u2192 follower, symbol, qty, success or failed, latency) within 24 hours, newest first. At most 10, and emptied when the server restarts.",
+                "responses": {
+                    "200": {
+                        "description": "Recent copies"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/user": {
+            "get": {
+                "tags": [
+                    "User"
+                ],
+                "summary": "Get current user info",
+                "responses": {
+                    "200": {
+                        "description": "User info"
+                    },
+                    "401": {
+                        "description": "Invalid or missing API key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
