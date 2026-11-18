@@ -15,7 +15,7 @@ All requests and responses are JSON. Interactive reference: [signaltradeapp.com/
 - [Errors](#errors)
 - [Symbols](#symbols)
 - [Order ids](#order-ids)
-- Endpoints: [accounts](#accounts) · [positions](#positions) · [orders](#orders) · [protection](#protection) · [risk](#risk) · [fills and P&L](#fills-and-pl) · [groups, connections, copies, user](#groups-connections-copies-user) · [streams](#streams) · [market data](#market-data) · [strategies (beta)](#strategies-beta)
+- Endpoints: [accounts](#accounts) · [positions](#positions) · [orders](#orders) · [protection](#protection) · [risk](#risk) · [fills and P&L](#fills-and-pl) · [groups, connections, copies, user](#groups-connections-copies-user) · [webhooks](#webhooks) · [streams](#streams) · [market data](#market-data) · [strategies (beta)](#strategies-beta)
 
 ## Authentication and scopes
 
@@ -700,6 +700,32 @@ The last copy attempts (at most 10, within 24 hours, newest first). This list is
   }
 }
 ```
+
+## Webhooks
+
+### POST /webhooks
+
+Creates a TradingView webhook URL for one of your accounts, the same as **Create token** on the **Signals** page. Needs the `trade` scope and the Pro plan (`403 PLAN_REQUIRED` otherwise).
+
+```bash
+curl -X POST https://signaltradeapp.com/api/v1/webhooks \
+  -H "X-API-Key: ts_live_xxx" -H "Content-Type: application/json" \
+  -d '{"accountId": "ACCOUNT_ID"}'
+```
+
+`201`:
+
+```json
+{
+  "data": {
+    "id": "WEBHOOK_ID",
+    "url": "https://signaltradeapp.com/api/webhook/WEBHOOK_TOKEN",
+    "accountId": "ACCOUNT_ID"
+  }
+}
+```
+
+The URL contains the secret token: anyone who has it can trade that account. It appears on the Signals page as **API**, where you can disable or delete it. `404` if the account is not yours. What to send to the URL: [tradingview-webhooks.md](tradingview-webhooks.md).
 
 ## Streams
 

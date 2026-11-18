@@ -449,14 +449,20 @@ Errors are a JSON object with an `error` message, sometimes with a `code`:
 | `409` | `BRACKET_INCOMPLETE`; more than one stop (`movestop`); breakeven refused and old stop restored; another protection change in progress |
 | `422` | `BROKER_ORDER_REJECTED`: the broker refused the order. The message carries its reason |
 | `502` | The broker gave no order id, or a breakeven left the position unprotected |
-| `503` | No active broker connection; positions not loaded yet (resend in a few seconds); `TRADING_PAUSED` during scheduled maintenance |
+| `503` | No active broker connection; positions not loaded yet (resend in a few seconds); `TRADING_PAUSED`: a `buy` or `sell` during scheduled maintenance |
 | `500` | Unexpected error |
 
 Notes:
 
 - A `200` for `buy`/`sell` means the order was **sent**. If the broker refuses it a moment later, the Signal Log entry is corrected to `REJECTED` and you are emailed.
 - A locked account (Risk page lockout or the daily P&L lock) refuses every webhook action, including `close`, until the lock ends.
-- During scheduled maintenance the webhook answers `503` with `"code": "TRADING_PAUSED"`. Close or flatten from the website or the REST API in that window.
+- During scheduled maintenance only **entries** are paused. A `buy` or `sell` answers `503`:
+
+  ```json
+  {"error": "Trading is paused for scheduled maintenance.", "detail": "New orders are not being accepted right now. You can still cancel orders, modify existing orders, and close or flatten open positions.", "code": "TRADING_PAUSED"}
+  ```
+
+  The alert is logged as `REJECTED` in the Signal Log and you get the usual failed-alert email. Nothing is sent to the broker and nothing is queued: the entry is not placed later. Every other action (`close`, `cancel`, `breakeven`, `movestop`, `protect`) keeps working during maintenance, so a webhook can still get you out of a position.
 
 ## Pine Script
 

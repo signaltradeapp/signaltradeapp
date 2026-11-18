@@ -48,4 +48,4 @@ Worked examples that combine these are in [recipes.md](recipes.md). Runnable fil
 - **No market data.** The API has no quotes or candles. `GET /market/quotes/{symbol}` and `GET /market/candles` answer `403 MARKET_DATA_DISABLED`. Get prices from your broker or a data vendor.
 - **Copying is automatic.** An order placed on a leader account through the API or a webhook is copied to its followers like any other leader order. You never place follower orders yourself.
 - **Order ids are the broker's.** They can change when a bracket leg is modified (Tradovate) or when any order is modified (Rithmic). Re-read `GET /accounts/{id}/working-orders` before you act on an id. Never cache them.
-- **Scheduled maintenance.** While order entry is paused for maintenance, new orders are refused with `503`. Cancels, modifies and REST closes still work.
+- **Scheduled maintenance.** While order entry is paused for maintenance, new orders (REST orders, webhook `buy`/`sell`) are refused with `503`. Cancels, modifies, closes and flattens still work, through the REST API and through webhooks.
